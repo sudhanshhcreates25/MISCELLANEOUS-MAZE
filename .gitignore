@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# C++ compiled files
+*.o
+*.out
+*.exe
+
+# Project executable
+maze
+
+# Build folders
+build/
+
+# VS Code
+.vscode/
