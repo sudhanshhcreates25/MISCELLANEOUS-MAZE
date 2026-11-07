@@ -5,6 +5,8 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <sstream>
+#include <stdexcept>
 
 using namespace maze_gp;
 
@@ -92,6 +94,34 @@ int main() {
     assert(std::isfinite(output));
     assert(std::abs(output) <= 1.0e6);
     std::cout << "PASS finite and bounded evaluation output\n";
+
+    std::stringstream serialized;
+    original.save(serialized);
+    ExpressionTree loaded = ExpressionTree::load(serialized);
+    assert(loaded.nodeCount() == original.nodeCount());
+    assert(loaded.depth() == original.depth());
+    assert(loaded.evaluate(features) == original.evaluate(features));
+    std::cout << "PASS versioned tree serialization round trip\n";
+
+    const char* invalidTrees[] = {
+        "MAZE_GP_TREE 9\nFEATURE_SCHEMA 1\nLIMITS 3 7\nTREE\nCONSTANT 1\nEND\n",
+        "MAZE_GP_TREE 1\nFEATURE_SCHEMA 9\nLIMITS 3 7\nTREE\nCONSTANT 1\nEND\n",
+        "MAZE_GP_TREE 1\nFEATURE_SCHEMA 1\nLIMITS 3 7\nTREE\nMYSTERY\nEND\n",
+        "MAZE_GP_TREE 1\nFEATURE_SCHEMA 1\nLIMITS 3 7\nTREE\nFEATURE 99\nEND\n",
+        "MAZE_GP_TREE 1\nFEATURE_SCHEMA 1\nLIMITS 3 7\nTREE\nCONSTANT nan\nEND\n",
+        "MAZE_GP_TREE 1\nFEATURE_SCHEMA 1\nLIMITS 1 1\nTREE\nADD\nCONSTANT 1\nCONSTANT 2\nEND\n"
+    };
+    for (const char* input : invalidTrees) {
+        bool rejected = false;
+        try {
+            std::stringstream bad(input);
+            (void)ExpressionTree::load(bad);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        assert(rejected);
+    }
+    std::cout << "PASS malformed, incompatible and over-limit tree rejection\n";
 
     EvolutionConfig config;
     config.populationSize = 12;

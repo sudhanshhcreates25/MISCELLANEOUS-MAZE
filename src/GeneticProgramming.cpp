@@ -2,8 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <istream>
 #include <limits>
+#include <ostream>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -76,6 +81,79 @@ unsigned depthNode(const Node& node) {
     if (!node.left && !node.right) return 1;
     return 1 + std::max(node.left ? depthNode(*node.left) : 0,
                         node.right ? depthNode(*node.right) : 0);
+}
+
+const char* nodeName(NodeKind kind) {
+    switch (kind) {
+        case NodeKind::Constant: return "CONSTANT";
+        case NodeKind::Feature: return "FEATURE";
+        case NodeKind::Add: return "ADD";
+        case NodeKind::Subtract: return "SUBTRACT";
+        case NodeKind::Multiply: return "MULTIPLY";
+        case NodeKind::Divide: return "DIVIDE";
+        case NodeKind::Minimum: return "MINIMUM";
+        case NodeKind::Maximum: return "MAXIMUM";
+    }
+    throw std::invalid_argument("Unknown GP node type");
+}
+
+void writeNode(std::ostream& output, const Node& node) {
+    output << nodeName(node.kind);
+    if (node.kind == NodeKind::Constant) {
+        if (!std::isfinite(node.value)) throw std::invalid_argument("Cannot serialize non-finite constant");
+        output << ' ' << std::setprecision(std::numeric_limits<double>::max_digits10) << node.value << '\n';
+    } else if (node.kind == NodeKind::Feature) {
+        output << ' ' << static_cast<std::size_t>(node.feature) << '\n';
+    } else {
+        output << '\n';
+        writeNode(output, *node.left);
+        writeNode(output, *node.right);
+    }
+}
+
+Node readNode(std::istream& input, unsigned level, std::size_t& nodes,
+              TreeLimits limits) {
+    if (level > limits.maxDepth || ++nodes > limits.maxNodes)
+        throw std::invalid_argument("Serialized expression exceeds limits");
+    std::string type;
+    if (!(input >> type)) throw std::invalid_argument("Truncated GP expression");
+    Node node;
+    if (type == "CONSTANT") {
+        std::string token;
+        if (!(input >> token)) throw std::invalid_argument("Missing GP constant");
+        std::size_t parsed = 0;
+        double value = 0.0;
+        try {
+            value = std::stod(token, &parsed);
+        } catch (...) {
+            throw std::invalid_argument("Invalid GP constant");
+        }
+        if (parsed != token.size() || !std::isfinite(value))
+            throw std::invalid_argument("GP constant must be finite");
+        node.kind = NodeKind::Constant;
+        node.value = value;
+        return node;
+    }
+    if (type == "FEATURE") {
+        long long index = -1;
+        if (!(input >> index) || index < 0 || index >= static_cast<long long>(Feature::Count))
+            throw std::invalid_argument("Invalid GP feature index");
+        node.kind = NodeKind::Feature;
+        node.feature = static_cast<Feature>(index);
+        return node;
+    }
+
+    if (type == "ADD") node.kind = NodeKind::Add;
+    else if (type == "SUBTRACT") node.kind = NodeKind::Subtract;
+    else if (type == "MULTIPLY") node.kind = NodeKind::Multiply;
+    else if (type == "DIVIDE") node.kind = NodeKind::Divide;
+    else if (type == "MINIMUM") node.kind = NodeKind::Minimum;
+    else if (type == "MAXIMUM") node.kind = NodeKind::Maximum;
+    else throw std::invalid_argument("Unknown GP node type: " + type);
+
+    node.left = std::make_unique<Node>(readNode(input, level + 1, nodes, limits));
+    node.right = std::make_unique<Node>(readNode(input, level + 1, nodes, limits));
+    return node;
 }
 
 void collect(Node& node, std::vector<Node*>& out) {
@@ -166,6 +244,49 @@ double ExpressionTree::evaluate(const FeatureVector& features) const { return ev
 std::size_t ExpressionTree::nodeCount() const { return count(root_); }
 unsigned ExpressionTree::depth() const { return depthNode(root_); }
 const TreeLimits& ExpressionTree::limits() const { return limits_; }
+
+void ExpressionTree::save(std::ostream& output) const {
+    output << "MAZE_GP_TREE " << TREE_FORMAT_VERSION << '\n'
+           << "FEATURE_SCHEMA " << FEATURE_SCHEMA_VERSION << '\n'
+           << "LIMITS " << limits_.maxDepth << ' ' << limits_.maxNodes << '\n'
+           << "TREE\n";
+    writeNode(output, root_);
+    output << "END\n";
+    if (!output) throw std::runtime_error("Failed to write GP expression tree");
+}
+
+ExpressionTree ExpressionTree::load(std::istream& input) {
+    return load(input, TreeLimits{32, 65535});
+}
+
+ExpressionTree ExpressionTree::load(std::istream& input, TreeLimits maximumLimits) {
+    std::string label;
+    unsigned formatVersion = 0;
+    unsigned schemaVersion = 0;
+    TreeLimits storedLimits;
+    if (!(input >> label >> formatVersion) || label != "MAZE_GP_TREE" ||
+        formatVersion != TREE_FORMAT_VERSION)
+        throw std::invalid_argument("Unsupported GP tree format");
+    if (!(input >> label >> schemaVersion) || label != "FEATURE_SCHEMA" ||
+        schemaVersion != FEATURE_SCHEMA_VERSION)
+        throw std::invalid_argument("Incompatible GP feature schema");
+    if (!(input >> label >> storedLimits.maxDepth >> storedLimits.maxNodes) ||
+        label != "LIMITS" || storedLimits.maxDepth == 0 || storedLimits.maxNodes == 0)
+        throw std::invalid_argument("Invalid GP tree limits");
+    if (maximumLimits.maxDepth == 0 || maximumLimits.maxNodes == 0)
+        throw std::invalid_argument("Loader limits must be positive");
+    TreeLimits effective{std::min(storedLimits.maxDepth, maximumLimits.maxDepth),
+                         std::min(storedLimits.maxNodes, maximumLimits.maxNodes)};
+    if (!(input >> label) || label != "TREE")
+        throw std::invalid_argument("Missing GP tree body");
+    std::size_t nodeCount = 0;
+    Node root = readNode(input, 1, nodeCount, effective);
+    if (!(input >> label) || label != "END")
+        throw std::invalid_argument("Malformed GP tree terminator");
+    std::string extra;
+    if (input >> extra) throw std::invalid_argument("Unexpected content after GP tree");
+    return ExpressionTree(std::move(root), effective);
+}
 
 ExpressionTree ExpressionTree::random(std::mt19937& rng, TreeLimits limits) {
     if (limits.maxDepth == 0 || limits.maxNodes == 0)

@@ -4,10 +4,14 @@
 #include <array>
 #include <cstddef>
 #include <functional>
+#include <iosfwd>
 #include <memory>
 #include <random>
 
 namespace maze_gp {
+
+inline constexpr unsigned TREE_FORMAT_VERSION = 1;
+inline constexpr unsigned FEATURE_SCHEMA_VERSION = 1;
 
 // Every feature is normalized to [0, 1]. Larger values are Defender-favorable,
 // except VaultReached, which is a phase flag (0 = infiltrate, 1 = escape).
@@ -56,6 +60,9 @@ public:
     std::size_t nodeCount() const;
     unsigned depth() const;
     const TreeLimits& limits() const;
+    void save(std::ostream& output) const;
+    static ExpressionTree load(std::istream& input);
+    static ExpressionTree load(std::istream& input, TreeLimits maximumLimits);
 
     static ExpressionTree random(std::mt19937& rng, TreeLimits limits = {});
     static ExpressionTree crossover(const ExpressionTree& first,
