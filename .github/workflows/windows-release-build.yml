@@ -1,0 +1,107 @@
+name: Windows x64 graphical build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "CMakeLists.txt"
+      - "src/**"
+      - ".github/workflows/windows-release-build.yml"
+  pull_request:
+    paths:
+      - "CMakeLists.txt"
+      - "src/**"
+      - ".github/workflows/windows-release-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the game
+        uses: actions/checkout@v4
+
+      - name: Check out pinned vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: 2026.01.16
+          path: vcpkg
+
+      - name: Install Raylib for Windows x64
+        shell: pwsh
+        run: |
+          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          .\vcpkg\vcpkg.exe install raylib:x64-windows-static --disable-metrics
+
+      - name: Configure Windows x64 Release build
+        shell: pwsh
+        run: >-
+          cmake -S . -B build -A x64
+          -DCMAKE_TOOLCHAIN_FILE="$env:GITHUB_WORKSPACE\vcpkg\scripts\buildsystems\vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DVCPKG_INSTALLED_DIR="$env:GITHUB_WORKSPACE\vcpkg\installed"
+          -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+
+      - name: Build only the graphical Release target
+        run: cmake --build build --config Release --target maze_graphical --parallel
+
+      - name: Assemble distributable ZIP
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP "Maze-Windows-x64"
+          New-Item -ItemType Directory -Path $package -Force | Out-Null
+
+          $executable = Get-ChildItem -Path build -Filter "maze_graphical.exe" -Recurse -File | Select-Object -First 1
+          if (-not $executable) { throw "maze_graphical.exe was not produced" }
+          Copy-Item $executable.FullName (Join-Path $package "Maze-Windows-x64.exe")
+
+          # Static Raylib and the static MSVC runtime are selected above. Copy
+          # any DLLs supplied by vcpkg anyway, in case a port dependency needs one.
+          $runtimeBin = Join-Path $env:GITHUB_WORKSPACE "vcpkg\installed\x64-windows-static\bin"
+          if (Test-Path $runtimeBin) {
+            Get-ChildItem -Path $runtimeBin -Filter "*.dll" -File |
+              ForEach-Object { Copy-Item $_.FullName $package }
+          }
+
+          # Verify the PE header is AMD64 (x64), not ARM64 or macOS.
+          $stream = [System.IO.File]::OpenRead((Join-Path $package "Maze-Windows-x64.exe"))
+          try {
+            $reader = [System.IO.BinaryReader]::new($stream)
+            $stream.Position = 0x3c
+            $peOffset = $reader.ReadInt32()
+            $stream.Position = $peOffset + 4
+            $machine = $reader.ReadUInt16()
+            if ($machine -ne 0x8664) { throw ("Expected AMD64 PE (0x8664), got 0x{0:X4}" -f $machine) }
+          } finally {
+            $stream.Dispose()
+          }
+
+          @'
+          MISCELLANEOUS MAZE - Windows 10/11 64-bit
+
+          1. Extract every file from this ZIP into one folder.
+          2. Double-click Maze-Windows-x64.exe to launch the game.
+          3. Move the Attacker with W/A/S/D or the arrow keys.
+          4. Close the game window to exit.
+
+          Keep any DLL files from this ZIP beside the EXE.
+          '@ | Set-Content -Path (Join-Path $package "README.txt") -Encoding ASCII
+
+          $zip = Join-Path $env:GITHUB_WORKSPACE "Maze-Windows-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $package "*") -DestinationPath $zip
+
+          Write-Host "Package contents:"
+          Get-ChildItem $package -File | Select-Object Name, Length
+
+      - name: Upload Windows x64 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maze-Windows-x64
+          path: Maze-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
