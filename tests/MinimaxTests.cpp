@@ -1,9 +1,10 @@
-#define main maze_interactive_main
-#include "../src/Main.cpp"
-#undef main
+#include "../src/GameEngine.h"
 
+#include <algorithm>
 #include <cassert>
 #include <iostream>
+
+using namespace std;
 
 namespace {
 
