@@ -1,10 +1,41 @@
 #include "GameEngine.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <queue>
 
 using namespace std;
+
+namespace {
+
+using DistanceMap = array<array<int, COLS>, ROWS>;
+
+DistanceMap distancesFrom(const char* maze[], Position start) {
+    DistanceMap distances{};
+    for (auto& row : distances) row.fill(-1);
+    if (!isWalkable(maze, start.row, start.col)) return distances;
+
+    queue<Position> pending;
+    pending.push(start);
+    distances[start.row][start.col] = 0;
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+    while (!pending.empty()) {
+        const Position current = pending.front();
+        pending.pop();
+        for (int i = 0; i < 4; ++i) {
+            const int nr = current.row + dr[i];
+            const int nc = current.col + dc[i];
+            if (!isWalkable(maze, nr, nc) || distances[nr][nc] != -1) continue;
+            distances[nr][nc] = distances[current.row][current.col] + 1;
+            pending.push({nr, nc});
+        }
+    }
+    return distances;
+}
+
+} // namespace
 
 bool isWalkable(const char* maze[], int row, int col) {
     if (row < 0 || row >= ROWS || col < 0 || col >= COLS) return false;
@@ -124,11 +155,43 @@ int evaluateState(GameState state, const char* maze[]) {
 
     Position target = state.mode == INFILTRATE ? state.vault : state.escapePoint;
     const int unreachableDistance = ROWS * COLS;
-    int attackerToTarget = shortestPathDistance(maze, state.attacker, target);
-    int defenderToAttacker = shortestPathDistance(maze, state.defender, state.attacker);
+    const DistanceMap attackerDistances = distancesFrom(maze, state.attacker);
+    const DistanceMap objectiveDistances = distancesFrom(maze, target);
+    const DistanceMap defenderDistances = distancesFrom(maze, state.defender);
+    int attackerToTarget = isWalkable(maze, target.row, target.col)
+        ? attackerDistances[target.row][target.col] : -1;
+    int defenderToAttacker = isWalkable(maze, state.attacker.row, state.attacker.col)
+        ? defenderDistances[state.attacker.row][state.attacker.col] : -1;
     if (attackerToTarget < 0) attackerToTarget = unreachableDistance;
     if (defenderToAttacker < 0) defenderToAttacker = unreachableDistance;
-    return (3 * attackerToTarget) - (2 * defenderToAttacker);
+
+    // Favor Defender access to future cells on any BFS-shortest objective route.
+    int defenderToRoute = 0;
+    if (attackerToTarget < unreachableDistance) {
+        defenderToRoute = unreachableDistance;
+        for (int row = 0; row < ROWS; ++row) {
+            for (int col = 0; col < COLS; ++col) {
+                const int fromAttacker = attackerDistances[row][col];
+                const int toObjective = objectiveDistances[row][col];
+                if (fromAttacker <= 0 || toObjective < 0 ||
+                    fromAttacker + toObjective != attackerToTarget) continue;
+                const int fromDefender = defenderDistances[row][col];
+                if (fromDefender >= 0) defenderToRoute = min(defenderToRoute, fromDefender);
+            }
+        }
+    }
+
+    const vector<Position> attackerMoves = getLegalMoves(maze, state.attacker);
+    int restrictedMoves = 0;
+    for (Position move : attackerMoves) {
+        if (defenderDistances[move.row][move.col] >= 0 &&
+            defenderDistances[move.row][move.col] <= 1) ++restrictedMoves;
+    }
+
+    return (3 * attackerToTarget) -
+           (2 * defenderToAttacker) -
+           (4 * defenderToRoute) +
+           (3 * restrictedMoves);
 }
 
 namespace {
