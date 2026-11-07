@@ -51,20 +51,6 @@ struct GameState {
 // 4. DISTANCE CALCULATION
 // ==========================================
 
-int distanceBetween(Position a, Position b) {
-
-    int rowDistance = a.row - b.row;
-    int colDistance = a.col - b.col;
-
-    if (rowDistance < 0)
-        rowDistance = -rowDistance;
-
-    if (colDistance < 0)
-        colDistance = -colDistance;
-
-    return rowDistance + colDistance;
-}
-
 // ==========================================
 // 5. CHECK VALID MOVEMENT
 // ==========================================
@@ -82,6 +68,57 @@ bool isWalkable(
     }
 
     return maze[row][col] != '#';
+}
+
+// Return the shortest walkable path length, or -1 for invalid/unreachable cells.
+int shortestPathDistance(
+    const char* maze[],
+    Position start,
+    Position target
+) {
+
+    if (!isWalkable(maze, start.row, start.col) ||
+        !isWalkable(maze, target.row, target.col)) {
+        return -1;
+    }
+
+    int distances[ROWS][COLS];
+    for (int row = 0; row < ROWS; ++row) {
+        for (int col = 0; col < COLS; ++col) {
+            distances[row][col] = -1;
+        }
+    }
+
+    queue<Position> q;
+    q.push(start);
+    distances[start.row][start.col] = 0;
+
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+
+    while (!q.empty()) {
+        Position current = q.front();
+        q.pop();
+
+        if (current.row == target.row && current.col == target.col) {
+            return distances[current.row][current.col];
+        }
+
+        for (int i = 0; i < 4; ++i) {
+            int nr = current.row + dr[i];
+            int nc = current.col + dc[i];
+
+            if (!isWalkable(maze, nr, nc) || distances[nr][nc] != -1) {
+                continue;
+            }
+
+            distances[nr][nc] = distances[current.row][current.col] + 1;
+            Position next = {nr, nc};
+            q.push(next);
+        }
+    }
+
+    return -1;
 }
 
 // ==========================================
@@ -180,7 +217,7 @@ GameState applyMove(
 // Higher score = better for Defender
 // ==========================================
 
-int evaluateState(GameState state) {
+int evaluateState(GameState state, const char* maze[]) {
 
     if (state.gameOver && !state.attackerWon) {
         return WIN_SCORE;
@@ -198,11 +235,16 @@ int evaluateState(GameState state) {
         target = state.escapePoint;
     }
 
-    int attackerToTarget =
-        distanceBetween(state.attacker, target);
+    const int unreachableDistance = ROWS * COLS;
+    int attackerToTarget = shortestPathDistance(maze, state.attacker, target);
+    int defenderToAttacker = shortestPathDistance(maze, state.defender, state.attacker);
 
-    int defenderToAttacker =
-        distanceBetween(state.defender, state.attacker);
+    if (attackerToTarget < 0) {
+        attackerToTarget = unreachableDistance;
+    }
+    if (defenderToAttacker < 0) {
+        defenderToAttacker = unreachableDistance;
+    }
 
     int score =
         (3 * attackerToTarget) -
@@ -227,7 +269,7 @@ int minimax(
 
     // Terminal state or depth limit
     if (depth == 0 || state.gameOver) {
-        return evaluateState(state);
+        return evaluateState(state, maze);
     }
 
     // ======================================
@@ -247,7 +289,7 @@ int minimax(
         }
 
         if (moves.empty()) {
-            return evaluateState(state);
+            return evaluateState(state, maze);
         }
 
         for (Position move : moves) {
@@ -298,7 +340,7 @@ int minimax(
             getLegalMoves(maze, state.attacker);
 
         if (moves.empty()) {
-            return evaluateState(state);
+            return evaluateState(state, maze);
         }
 
         for (Position move : moves) {
@@ -347,6 +389,11 @@ Position findNextStep(
     Position invalid;
     invalid.row = -1;
     invalid.col = -1;
+
+    if (!isWalkable(maze, start.row, start.col) ||
+        !isWalkable(maze, target.row, target.col)) {
+        return invalid;
+    }
 
     bool visited[ROWS][COLS] = {};
 
